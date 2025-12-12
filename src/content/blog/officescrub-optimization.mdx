@@ -1,0 +1,219 @@
+---
+title: 'Reverse Engineering OfficeScrubC2R: From 20 Minutes to 30 Seconds'
+description: 'Porting Microsoft's VBScript Office removal tool to C# with native WinAPI optimization'
+pubDate: 'Dec 13 2024'
+tags: ['reverse-engineering', 'performance', 'windows', 'msp']
+---
+
+Microsoft's OfficeScrubC2R.vbs takes 20 minutes to remove Office installations. When you're managing 177 tenants, that's unacceptable. So I reverse-engineered it, ported it to C#, and optimized it with native WinAPI.
+
+**Result: 30 seconds.**
+
+## The Problem
+
+As an MSP engineer, I constantly deal with failed Office installations. Microsoft provides `OfficeScrubC2R.vbs` - a 3,000-line VBScript that completely removes Office.
+
+**The issue:** 20 minutes per machine.
+
+For tenant migrations across 50+ machines, that's 16+ hours of waiting. Unacceptable.
+
+## Discovery
+
+While troubleshooting a deployment, I noticed in Process Hacker:
+```
+SARA.exe
+  └─ cscript.exe
+      └─ OfficeScrubC2R.vbs
+```
+
+The Microsoft Support and Recovery Assistant spawns the VBScript via `cscript.exe`. I grabbed the file and started analyzing.
+
+## What OfficeScrub Does
+
+The 3,000 lines break down into:
+
+1. Kill running Office processes
+2. Enumerate Office installations (Click-to-Run vs MSI)  
+3. Delete registry keys (HKLM and HKCU)
+4. Remove file system artifacts
+5. Clean Windows Installer cache
+6. Remove scheduled tasks
+
+## Why It's Slow
+```vbscript
+' Original VBS (interpreted, single-threaded):
+Set objWMI = GetObject("winmgmts:{impersonationLevel=impersonate}!\\.\root\cimv2")
+Set colProcesses = objWMI.ExecQuery("SELECT * FROM Win32_Process WHERE Name = 'OUTLOOK.EXE'")
+For Each objProcess in colProcesses
+    objProcess.Terminate()
+Next
+```
+
+**Performance killers:**
+- WMI queries are interpreted (not compiled)
+- Single-threaded execution
+- Everything goes through COM (overhead)
+- Synchronous registry operations
+
+## The C# Port
+
+First pass: Direct translation using managed APIs.
+```cs
+public void RemoveOffice()
+{
+    // Kill processes
+    foreach (var proc in Process.GetProcesses())
+    {
+        if (IsOfficeProcess(proc.ProcessName))
+        {
+            try { proc.Kill(); } 
+            catch { /* Already exited */ }
+        }
+    }
+    
+    // Delete registry keys
+    using (var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Office", true))
+    {
+        if (key != null)
+        {
+            foreach (var subKey in key.GetSubKeyNames())
+            {
+                if (subKey.StartsWith("16.0") || subKey.StartsWith("15.0"))
+                    key.DeleteSubKeyTree(subKey);
+            }
+        }
+    }
+}
+```
+
+**Performance: 8-12 minutes**
+
+Better, but not good enough.
+
+## Native Optimization
+
+This is where I went deep - direct Windows API calls instead of .NET wrappers.
+
+### P/Invoke for Registry
+```cs
+[DllImport("advapi32.dll", SetLastError = true)]
+internal static extern int RegOpenKeyEx(
+    UIntPtr hKey,
+    string lpSubKey,
+    uint ulOptions,
+    int samDesired,
+    out UIntPtr phkResult);
+
+[DllImport("advapi32.dll", SetLastError = true)]
+internal static extern int RegDeleteKeyEx(
+    UIntPtr hKey,
+    string lpSubKey,
+    int samDesired,
+    uint Reserved);
+```
+
+**Impact:** Registry operations went from ~2000ms to ~20ms (100x faster).
+
+### MSI API for Product Enumeration
+```cs
+[DllImport("msi.dll", CharSet = CharSet.Unicode)]
+internal static extern uint MsiEnumProducts(
+    uint iProductIndex,
+    StringBuilder lpProductBuf);
+```
+
+Instead of WMI queries, direct MSI API enumeration. **100x faster.**
+
+### Parallel Processing
+```cs
+var officeProcesses = new[] { 
+    "OUTLOOK", "WINWORD", "EXCEL", "POWERPNT" 
+};
+
+Parallel.ForEach(officeProcesses, processName => {
+    foreach (var proc in Process.GetProcessesByName(processName))
+    {
+        try { proc.Kill(); }
+        catch { /* Terminated */ }
+    }
+});
+```
+
+## Performance Results
+
+| Version | Execution Time | Improvement |
+|---------|---------------|-------------|
+| VBScript (Original) | 20 minutes | Baseline |
+| C# Managed APIs | 8-12 minutes | 2x |
+| **C# + Native APIs** | **30-90 seconds** | **13-40x** |
+
+On modern hardware (12th gen Intel, NVMe): **~30 seconds**  
+On older hardware (8th gen i5, SATA SSD): **~90 seconds**
+
+## Real-World Impact
+
+**Before:**
+- 1,000 machines × 20 minutes = 333 hours
+- Must run during maintenance windows
+- Blocks other automation
+
+**After:**
+- 1,000 machines × 45 seconds = 12.5 hours  
+- Run during business hours
+- Parallel execution across tenants
+
+**Cost savings:** ~320 hours = ~$32,000 in labor (at $100/hour)
+
+## PowerShell Wrapper
+```powershell
+Add-Type -Path ".\OfficeScrubNative.dll"
+
+function Remove-OfficeInstallation {
+    [CmdletBinding()]
+    param([switch]$Force)
+    
+    if (-not $Force) {
+        $confirm = Read-Host "Remove ALL Office? (Y/N)"
+        if ($confirm -ne 'Y') { return }
+    }
+    
+    Write-Host "Removing Office..." -ForegroundColor Yellow
+    [OfficeScrubNative.NativeMethods]::RemoveAllOfficeProducts()
+    Write-Host "Complete!" -ForegroundColor Green
+}
+```
+
+## Detection Considerations
+
+EDR may flag:
+- Bulk registry deletions (ransomware-like)
+- Mass file deletion in Program Files
+- Rapid process termination
+
+**Mitigation:**
+- Whitelist the executable
+- Use signed binaries
+- Add logging for audit trail
+
+## Code Release
+
+Full source coming soon (pending employer clearance):
+- Complete C# with P/Invoke declarations
+- PowerShell wrapper module
+- RMM integration examples
+- Unit tests
+
+## What's Next
+
+Working on similar optimizations for:
+- SharePoint site provisioning (10min → 30sec)
+- Azure AD sync operations
+- Exchange mailbox migrations
+
+**Next post:** Azure IoT Hub as command-and-control infrastructure - how legitimate automation becomes offensive tooling.
+
+---
+
+**About:** Calvin Carey is an Automation/AI Engineer at Intuity Technologies in Galway, Ireland, managing automation across 177+ Microsoft 365 tenants.
+
+*Questions? Find me on [LinkedIn](https://linkedin.com/in/your-profile) or [GitHub](https://github.com/your-username).*
