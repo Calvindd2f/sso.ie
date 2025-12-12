@@ -4,8 +4,6 @@ import mdx from '@astrojs/mdx';
 import sitemap from '@astrojs/sitemap';
 import { defineConfig } from 'astro/config';
 
-import tailwindcss from '@tailwindcss/vite';
-
 // https://astro.build/config
 export default defineConfig({
   site: 'https://sso.ie',
@@ -15,8 +13,5 @@ export default defineConfig({
       theme: 'dracula',
       wrap: true
     }
-  },
-  vite: {
-    plugins: [tailwindcss()],
   },
 });
