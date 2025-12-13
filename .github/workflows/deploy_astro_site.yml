@@ -1,6 +1,9 @@
-# Sample workflow for building and deploying an Astro site to GitHub Pages
+# Deploy Astro site to GitHub Pages
 #
-# To get started with Astro see: https://docs.astro.build/en/getting-started/
+# IMPORTANT: Before this workflow will work, you must:
+# 1. Go to Repository Settings → Pages
+# 2. Under "Source", select "GitHub Actions" (not "Deploy from a branch")
+# 3. Save the settings
 #
 name: Deploy Astro site to Pages
 
