@@ -1,0 +1,457 @@
+---
+title: 'Unlocking Remote PowerShell Execution: The Journey of IoTPowerShellAgent'
+description: 'When automation becomes adversarial'
+pubDate: 'Dec 20 2025'
+tags: ['azure', 'c2', 'offensive-security', 'iot']
+---
+
+## Introduction: Bridging the Gap Between Cloud and Windows
+
+Imagine a world where you can execute PowerShell scripts on remote Windows machines from anywhere in the world, with enterprise-grade security, comprehensive logging, and seamless integration with modern cloud workflows. This isn't a futuristic vision—it's the reality that **IoTPowerShellAgent** brings to life.
+
+In this deep dive, we'll explore how this innovative Windows Service transforms the way organizations manage and automate their Windows infrastructure, the powerful JSON conversion engine that makes it all possible, and the real-world benefits that make it a game-changer for DevOps and IT operations teams.
+
+---
+
+## The Challenge: Remote PowerShell in a Cloud-First World
+
+Traditional PowerShell execution has always been a local affair. You need to be physically present at a machine, or use Remote PowerShell (WinRM), which comes with its own set of security concerns, firewall complications, and scalability limitations. In today's cloud-native, distributed infrastructure landscape, this approach simply doesn't scale.
+
+**Enter Azure IoT Hub**—Microsoft's robust platform for managing millions of devices at scale. What if we could leverage this battle-tested infrastructure to execute PowerShell scripts remotely, with the same reliability and security that powers IoT deployments worldwide?
+
+That's exactly what IoTPowerShellAgent accomplishes. It's not just a PowerShell executor—it's a complete transformation of how we think about remote Windows automation.
+
+---
+
+## What is IoTPowerShellAgent?
+
+IoTPowerShellAgent is a **Windows Service** that acts as a bridge between Azure IoT Hub and PowerShell execution. Think of it as a secure, scalable, and intelligent agent that:
+
+- **Listens** for PowerShell script execution requests via Azure IoT Hub direct methods
+- **Executes** scripts with full system privileges (running as `NT AUTHORITY\SYSTEM`)
+- **Streams** all output types (Verbose, Debug, Warning, Error, Information, Progress) in real-time
+- **Converts** complex PowerShell objects into structured JSON for API integration
+- **Monitors** system performance and provides telemetry back to the cloud
+- **Logs** everything comprehensively for audit and troubleshooting
+
+### The Architecture: Built for Scale and Reliability
+
+The project follows a clean, modular architecture that separates concerns beautifully:
+
+```txt
+IoTPowerShellAgent/
+├── Core/          # Domain models and core services
+├── PowerShell/    # PowerShell host and executor
+├── IoT/           # Azure IoT Hub integration
+├── Services/      # Windows Service implementation
+└── Utilities/     # JSON conversion, process management, etc.
+```
+
+This architecture ensures that each component has a single, well-defined responsibility, making the system maintainable, testable, and extensible.
+
+---
+
+## The Magic: JSON Conversion Engine
+
+One of the most fascinating aspects of IoTPowerShellAgent is its **embedded JSON conversion module**. This isn't your run-of-the-mill JSON serialization—it's a sophisticated engine specifically designed to handle PowerShell's unique object model.
+
+### The Conversion Challenge
+
+PowerShell objects are complex beasts. They can be:
+
+- **PSObjects** with dynamic properties
+- **Hashtables** and **Dictionaries**
+- **Arrays** and **Collections**
+- **Custom objects** with nested structures
+- **Enums** that need special handling
+- **DateTime** objects requiring ISO 8601 formatting
+
+Standard JSON serialization libraries often fail to capture the full richness of PowerShell objects, losing type information, nested properties, and the dynamic nature that makes PowerShell so powerful.
+
+### The Solution: Embedded Conversion Module
+
+IoTPowerShellAgent includes an embedded JSON conversion module (formerly the standalone `powershellruntimeextension` project) that provides:
+
+#### 1. **Intelligent Type Handling**
+
+The conversion engine understands PowerShell's type system deeply. It can:
+
+- Preserve PSObject properties and metadata
+- Handle nested objects recursively
+- Convert enums to strings or integers based on context
+- Format dates in ISO 8601 format automatically
+- Manage depth limits to prevent infinite recursion
+
+#### 2. **PowerShell-Specific Features**
+
+```csharp
+// The engine handles complex PowerShell scenarios:
+- PSCustomObject serialization
+- Hashtable conversion with proper key handling
+- Array processing with type preservation
+- Error record serialization with full stack traces
+```
+
+#### 3. **Configurable Output**
+
+The conversion is highly configurable:
+
+- **Max Depth Control**: Prevents stack overflow on deeply nested objects
+- **Enum Handling**: Convert enums to strings for readability or integers for compactness
+- **Compression**: Generate compact JSON or pretty-printed, indented output
+- **String Escaping**: Proper handling of special characters
+
+### Real-World Example: From PowerShell to API
+
+Here's how the conversion process works in practice:
+
+**PowerShell Script:**
+
+```powershell
+Get-Process | Select-Object -First 5 Name, CPU, WorkingSet
+```
+
+**Traditional JSON Output (Limited):**
+
+```json
+{
+  "Name": "chrome",
+  "CPU": 123.45,
+  "WorkingSet": 12345678
+}
+```
+
+**IoTPowerShellAgent JSON Output (Rich):**
+
+```json
+{
+  "Success": true,
+  "Output": "[{\"Name\":\"chrome\",\"CPU\":123.45,\"WorkingSet\":12345678},...]",
+  "RawOutput": [
+    {
+      "Name": "chrome",
+      "CPU": 123.45,
+      "WorkingSet": 12345678,
+      "PSComputerName": null,
+      "RunspaceId": "..."
+    }
+  ],
+  "ErrorDetails": null
+}
+```
+
+The conversion preserves not just the data, but the **context** and **metadata** that makes PowerShell objects so powerful.
+
+---
+
+## Benefits: Why This Matters
+
+### 1. **Unified Cloud Management**
+
+With IoTPowerShellAgent, you can manage thousands of Windows machines from a single Azure IoT Hub instance. No need for complex VPN setups, firewall rules, or individual machine access. Everything flows through Azure's secure, scalable infrastructure.
+
+### 2. **Enterprise Security**
+
+- **Azure IoT Hub Authentication**: Leverages Azure's robust device authentication
+- **Connection String Security**: Encrypted communication end-to-end
+- **Audit Logging**: Every script execution is logged with full context
+- **Access Control**: Fine-grained permissions through IoT Hub device policies
+
+### 3. **Scalability**
+
+Azure IoT Hub is designed to handle millions of devices. Your PowerShell execution infrastructure can scale from a single machine to thousands without architectural changes. The service handles:
+
+- Concurrent script executions
+- Automatic reconnection on network issues
+- Load balancing across multiple instances
+
+### 4. **Developer Experience**
+
+The service provides multiple execution modes:
+
+**Debug Mode** - Interactive testing without IoT Hub:
+
+```bash
+dotnet run -- --debug
+PS> Get-Date
+PS> Get-Process | Select-Object -First 5
+```
+
+**Test Mode** - One-time script execution:
+
+```bash
+dotnet run -- --test --script="Get-Date"
+```
+
+**Production Mode** - Windows Service with full IoT Hub integration
+
+### 5. **API Integration Ready**
+
+The JSON conversion engine makes it trivial to integrate PowerShell results into modern workflows:
+
+```csharp
+var result = await ExecuteScriptAsync("Get-Process");
+var json = result.ToJson(); // Rich, structured JSON
+await httpClient.PostAsync(apiEndpoint, new StringContent(json));
+```
+
+This enables:
+
+- **Workflow Integration**: Direct integration with Azure Logic Apps, Power Automate, etc.
+- **API Endpoints**: Send results to REST APIs, webhooks, or event hubs
+- **Data Pipelines**: Feed PowerShell results into data analytics platforms
+- **Monitoring Systems**: Real-time telemetry and metrics
+
+### 6. **Comprehensive Observability**
+
+The service provides rich telemetry:
+
+- **Process Metrics**: CPU, memory, working set
+- **System Performance**: Real-time system resource monitoring
+- **Execution Logs**: All PowerShell output streams captured
+- **Error Tracking**: Detailed error records with stack traces
+
+---
+
+## The Conversion Process: Under the Hood
+
+Let's dive deeper into how the JSON conversion actually works:
+
+### Step 1: PowerShell Execution
+
+When a script is executed, PowerShell returns objects in its native format—PSObjects, arrays, hashtables, etc.
+
+### Step 2: Object Analysis
+
+The conversion engine analyzes each object:
+
+- Determines the base type (string, number, object, array, etc.)
+- Identifies PSObject wrappers and their properties
+- Detects nested structures
+- Checks for circular references
+
+### Step 3: Recursive Processing
+
+The engine processes objects recursively:
+
+```csharp
+ProcessValue(object obj, int depth, ConvertToJsonContext context)
+{
+    // Handle nulls and AutomationNull
+    // Unwrap PSObjects
+    // Process dictionaries
+    // Process enumerables
+    // Handle primitives
+    // Process custom objects
+    // Add PSObject properties
+}
+```
+
+### Step 4: JSON Serialization
+
+Finally, the processed object graph is serialized using Newtonsoft.Json with custom settings:
+
+- Type name handling disabled (clean JSON)
+- Max depth enforcement
+- Enum conversion based on context
+- Pretty printing or compression
+
+### Step 5: Result Packaging
+
+The JSON is packaged into a `PowerShellExecutionResult` object that includes:
+
+- Success status
+- Formatted output string
+- Error details (if any)
+- Raw output objects
+- Exception information
+
+---
+
+## Real-World Use Cases
+
+### 1. **Automated System Maintenance**
+
+Schedule PowerShell scripts to run across all Windows servers for:
+
+- Disk cleanup
+- Log rotation
+- Security patch verification
+- Performance monitoring
+
+### 2. **DevOps Automation**
+
+Integrate PowerShell into CI/CD pipelines:
+
+- Pre-deployment checks
+- Post-deployment verification
+- Environment configuration
+- Health checks
+
+### 3. **Security Compliance**
+
+Execute compliance checks remotely:
+
+- Security policy verification
+- Software inventory
+- Configuration audits
+- Vulnerability scanning
+
+### 4. **Data Collection and Analytics**
+
+Gather system information at scale:
+
+- Performance metrics
+- Application inventory
+- User activity logs
+- Resource utilization
+
+### 5. **Incident Response**
+
+Rapid response to security incidents:
+
+- Forensic data collection
+- System state snapshots
+- Log aggregation
+- Threat hunting
+
+---
+
+## Performance and Reliability
+
+IoTPowerShellAgent is built for production use:
+
+### **Process Priority Management**
+
+The service elevates process priority to HIGH during script execution, ensuring optimal performance, then automatically restores it to NORMAL afterward.
+
+### **Timeout Handling**
+
+Configurable script timeouts prevent runaway processes:
+
+```json
+{
+  "ScriptTimeoutSeconds": 300
+}
+```
+
+### **Error Recovery**
+
+Comprehensive error handling ensures:
+
+- Network disconnections are handled gracefully
+- Script errors are captured with full context
+- Service continues running even if individual scripts fail
+
+### **Resource Monitoring**
+
+Built-in performance monitoring using P/Invoke for low-overhead metrics collection.
+
+---
+
+## Security Considerations
+
+Running as `NT AUTHORITY\SYSTEM` provides maximum script execution capabilities, but requires careful security planning:
+
+### **Best Practices:**
+
+1. **Secure Connection Strings**: Store IoT Hub connection strings securely
+2. **Access Control**: Limit script execution permissions through IoT Hub policies
+3. **Audit Logging**: Monitor all activity logs for suspicious behavior
+4. **Network Security**: Use Azure Private Link for IoT Hub when possible
+5. **Script Validation**: Validate scripts before execution when possible
+6. **Least Privilege**: Consider running with reduced privileges for specific use cases
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+- .NET 8.0 SDK or later
+- Windows 10/11 or Windows Server 2016+
+- Azure IoT Hub account
+- PowerShell 5.1 or later
+
+### Quick Start
+
+1. **Clone and Build:**
+
+```bash
+git clone <repository>
+cd IoTPowerShellAgent/src/IoTPowerShellAgent
+dotnet build
+```
+
+2. **Configure:**
+
+  ```json
+  {
+    "IoTHubConnectionString": "HostName=your-iothub.azure-devices.net;...",
+    "DeviceId": "your-device-id",
+    "ScriptTimeoutSeconds": 300
+  }
+  ```
+
+3. **Test Locally:**
+
+```bash
+dotnet run -- --debug
+```
+
+4. **Deploy as Service:**
+
+```bash
+IoTPowerShellAgent.exe install
+IoTPowerShellAgent.exe start
+```
+
+### Execute Your First Script
+
+Via Azure IoT Hub Direct Method:
+
+```json
+{
+  "methodName": "ExecuteScript",
+  "payload": {
+    "Script": "Get-Date | ConvertTo-Json",
+    "IsInlinePowershell": false
+  }
+}
+```
+
+---
+
+## The Future: What's Next?
+
+IoTPowerShellAgent represents a new paradigm in Windows automation. As organizations continue to embrace cloud-native architectures, the ability to execute PowerShell remotely with enterprise-grade security and scalability becomes increasingly critical.
+
+Potential enhancements on the horizon:
+
+- **Multi-tenant support** for service providers
+- **Script versioning** and rollback capabilities
+- **Advanced scheduling** and workflow orchestration
+- **Enhanced security** with script signing verification
+- **Performance optimizations** for high-throughput scenarios
+
+---
+
+## Conclusion: Transforming Windows Automation
+
+IoTPowerShellAgent isn't just a tool—it's a transformation of how we think about remote Windows automation. By combining the power of Azure IoT Hub with sophisticated JSON conversion and comprehensive logging, it enables organizations to:
+
+- **Scale** their automation from one machine to thousands
+- **Secure** their PowerShell execution with enterprise-grade controls
+- **Integrate** PowerShell results seamlessly into modern workflows
+- **Monitor** and **audit** all automation activities comprehensively
+
+The embedded JSON conversion engine is the secret sauce that makes it all possible, transforming complex PowerShell objects into structured, API-ready JSON that powers modern cloud workflows.
+
+Whether you're managing a small infrastructure or a global enterprise, IoTPowerShellAgent provides the foundation for secure, scalable, and maintainable Windows automation in the cloud era.
+
+**Ready to transform your Windows automation?** Start with a single machine, test in debug mode, and scale to thousands as your needs grow. The future of remote PowerShell execution is here, and it's running on Azure IoT Hub.
+
+---
+
+*For more information, documentation, and examples, visit the [IoTPowerShellAgent repository](https://github.com/your-org/IoTPowerShellAgent).*
+

